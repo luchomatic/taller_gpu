@@ -28,22 +28,9 @@
 //
 // Estructuras y variables para Algoritmo de gravitacion
 //
-typedef struct cuerpo cuerpo_t;
-struct cuerpo{
-	float masa;
-	float px;
-	float py;
-	float pz;
-	float vx;
-	float vy;
-	float vz;
-	float r;
-	float g;
-	float b;
-	int cuerpo;
-};
 
-float *fuerza_totalX,*fuerza_totalY, *fuerza_totalZ;
+
+
 float toroide_alfa;
 float toroide_theta;
 float toroide_incremento;
@@ -51,12 +38,13 @@ float toroide_lado;
 float toroide_r;
 float toroide_R;
 
-cuerpo_t *cuerpos;
+
 int delta_tiempo = 1.0f; //Intervalo de tiempo, longitud de un paso
 int pasos;
 int N;
 
 //variables nuestras re locas//
+float *masas;
 float *cPositionX;
 float *cPositionY;
 float *cPositionZ;
@@ -64,6 +52,10 @@ float *cPositionZ;
 float *cVelocityX;
 float *cVelocityY;
 float *cVelocityZ;
+
+float *fuerza_totalX;
+float *fuerza_totalY; 
+float *fuerza_totalZ;
 
 
 double cColorR = (double )rand()/(RAND_MAX+1.0);
@@ -76,7 +68,7 @@ double cColorB = (double )rand()/(RAND_MAX+1.0);
 // Funciones para Algoritmo de gravitacion
 //
 
-void calcularFuerzas(cuerpo_t *cuerpos, int N, int dt){
+void calcularFuerzas(int N, int dt){
 int cuerpo1, cuerpo2;
 float dif_X, dif_Y, dif_Z;
 float distancia;
@@ -84,16 +76,16 @@ float F;
 
 	for(cuerpo1 = 0; cuerpo1<N-1 ; cuerpo1++){
 		for(cuerpo2 = cuerpo1 + 1; cuerpo2<N ; cuerpo2++){
-			if ( (cuerpos[cuerpo1].px == cuerpos[cuerpo2].px) && (cuerpos[cuerpo1].py == cuerpos[cuerpo2].py) && (cuerpos[cuerpo1].pz == cuerpos[cuerpo2].pz))
+			if ( (cPositionX[cuerpo1] == cPositionX[cuerpo2]) && (cPositionY[cuerpo1]== cPositionY[cuerpo2]) && (cPositionZ[cuerpo1] == cPositionZ[cuerpo2]))
                 continue;
 
-	            	dif_X = cuerpos[cuerpo2].px - cuerpos[cuerpo1].px;
-			dif_Y = cuerpos[cuerpo2].py - cuerpos[cuerpo1].py;
-			dif_Z = cuerpos[cuerpo2].pz - cuerpos[cuerpo1].pz;
+	            	dif_X = cPositionX[cuerpo2] - cPositionX[cuerpo1];
+			dif_Y = cPositionY[cuerpo2] - cPositionY[cuerpo1];
+			dif_Z = cPositionZ[cuerpo2] - cPositionZ[cuerpo1];
                 
 			distancia = sqrt(dif_X*dif_X + dif_Y*dif_Y + dif_Z*dif_Z);
 
-	                F = (G*cuerpos[cuerpo1].masa*cuerpos[cuerpo2].masa)/(distancia*distancia);
+	                F = (G*masas[cuerpo1]*masas[cuerpo2])/(distancia*distancia);
 
 	                dif_X *= F;
 			dif_Y *= F;
@@ -110,21 +102,21 @@ float F;
 	}
 }
 
-void moverCuerpos(cuerpo_t *cuerpos, int N, int dt){
+void moverCuerpos(int N, int dt){
  int cuerpo;
 	for(cuerpo = 0; cuerpo<N ; cuerpo++){
 
-        	fuerza_totalX[cuerpo] *= 1/cuerpos[cuerpo].masa;
-        	fuerza_totalY[cuerpo] *= 1/cuerpos[cuerpo].masa;
-        	//fuerza_totalZ[cuerpo] *= 1/cuerpos[cuerpo].masa;
+        	fuerza_totalX[cuerpo] *= 1/masas[cuerpo];
+        	fuerza_totalY[cuerpo] *= 1/masas[cuerpo];
+        	
 
-        	cuerpos[cuerpo].vx += fuerza_totalX[cuerpo]*dt;
-        	cuerpos[cuerpo].vy += fuerza_totalY[cuerpo]*dt;
-        	//cuerpos[cuerpo].vz += fuerza_totalZ[cuerpo]*dt;
+        	cVelocityX[cuerpo] += fuerza_totalX[cuerpo]*dt;
+        	cVelocityY[cuerpo] += fuerza_totalY[cuerpo]*dt;
+        	
 
-        	cuerpos[cuerpo].px += cuerpos[cuerpo].vx *dt;
-        	cuerpos[cuerpo].py += cuerpos[cuerpo].vy *dt;
-        	//cuerpos[cuerpo].pz += cuerpos[cuerpo].vz *dt;
+        	cPositionX[cuerpo] += cVelocityX[cuerpo] *dt;
+        	cPositionY[cuerpo] += cVelocityY[cuerpo] *dt;
+        	
 
         	fuerza_totalX[cuerpo] = 0.0;
 		fuerza_totalY[cuerpo] = 0.0;
@@ -133,16 +125,16 @@ void moverCuerpos(cuerpo_t *cuerpos, int N, int dt){
     	}
 }
 
-void gravitacionCPU(cuerpo_t *cuerpos, int N, int dt){
+void gravitacionCPU(int N, int dt){
 	//reescribir estas dos funciones en gpu//
-	calcularFuerzas(cuerpos,N,dt);
-	moverCuerpos(cuerpos,N,dt);
+	calcularFuerzas(N,dt);
+	moverCuerpos(N,dt);
 }
 
-void inicializarEstrella(cuerpo_t *cuerpo,int i,double n){
+void inicializarEstrella(int i,double n){
 	
-    //no nos interesa porq todos van a tener la misma meza/
-    cuerpo->masa = 0.001*8;
+    //todos van a tener la misma masa//
+    masas[i] = 0.001*8;
 
         if ((toroide_alfa + toroide_incremento) >=2*M_PI){
             toroide_alfa = 0;
@@ -151,22 +143,18 @@ void inicializarEstrella(cuerpo_t *cuerpo,int i,double n){
             toroide_alfa+=toroide_incremento;
         }
 
-	cuerpo->px = (toroide_R + toroide_r*cos(toroide_alfa))*cos(toroide_theta);
-	cuerpo->py = (toroide_R + toroide_r*cos(toroide_alfa))*sin(toroide_theta);
-	cuerpo->pz = toroide_r*sin(toroide_alfa);
+	cPositionX[i] = (toroide_R + toroide_r*cos(toroide_alfa))*cos(toroide_theta); 
+	cPositionY[i] = (toroide_R + toroide_r*cos(toroide_alfa))*sin(toroide_theta);
+ 	cPositionZ[i] = toroide_r*sin(toroide_alfa);
 
-    	cuerpo->vx = 0.0;
-	cuerpo->vy = 0.0;
-	cuerpo->vz = 0.0;
-
-		cuerpo->r = (double )rand()/(RAND_MAX+1.0);
-		cuerpo->g = (double )rand()/(RAND_MAX+1.0);
-		cuerpo->b = (double )rand()/(RAND_MAX+1.0);
+	cVelocityX[i] = 0.0;
+	cVelocityY[i] = 0.0;
+	cVelocityZ[i] = 0.0;
 }
 
 
 
-void inicializarCuerpos(cuerpo_t *cuerpos,int N){
+void inicializarCuerpos(int N){
  int cuerpo;
  double n = N;
 
@@ -187,32 +175,35 @@ void inicializarCuerpos(cuerpo_t *cuerpos,int N){
 		fuerza_totalY[cuerpo] = 0.0;
 		fuerza_totalZ[cuerpo] = 0.0;
 
-		cuerpos[cuerpo].cuerpo = (rand() %3);
-
-		inicializarEstrella(&cuerpos[cuerpo],cuerpo,n);
+		inicializarEstrella(cuerpo,n);
 		
 	}
+		masas[0] = 2.0e2;
+	        cPositionX[0] = 0.0;
+		cPositionY[0] = 0.0;
+		cPositionZ[0] = 0.0;
+		cVelocityX[0] = -0.000001;
+		cVelocityY[0] = -0.000001;
+		cVelocityZ[0] = 0.0;
 
-		cuerpos[0].masa = 2.0e2;
-	        cuerpos[0].px = 0.0;
-		cuerpos[0].py = 0.0;
-		cuerpos[0].pz = 0.0;
-		cuerpos[0].vx = -0.000001;
-		cuerpos[0].vy = -0.000001;
-		cuerpos[0].vz = 0.0;
-
-		cuerpos[1].masa = 1.0e1;
-	        cuerpos[1].px = -1.0;
-		cuerpos[1].py = 0.0;
-		cuerpos[1].pz = 0.0;
-		cuerpos[1].vx = 0.0;
-		cuerpos[1].vy = 0.0001;
-		cuerpos[1].vz = 0.0;
+		masas[1] = 1.0e1;
+	        cPositionX[1] = -1.0;
+		cPositionY[1] = 0.0;
+		cPositionZ[1] = 0.0;
+		cVelocityX[1] = 0.0;
+		cVelocityY[1] = 0.0001;
+		cVelocityZ[1] = 0.0;
 
 }
 
 void finalizar(void){
-	free(cuerpos);
+	free(masas);
+	free(cPositionX);
+	free(cPositionY);
+	free(cPositionZ);
+	free(cVelocityX);
+	free(cVelocityY);
+	free(cVelocityZ);
 	free(fuerza_totalX);
 	free(fuerza_totalY);
 	free(fuerza_totalZ);
@@ -226,7 +217,7 @@ __global__ void kernelGravitacion(void){
  printf("Hello\n");
 }
 
-void gravitacionGPU(cuerpo_t *cuerpos, int N, int dt){
+void gravitacionGPU( int N, int dt){
  	
 	kernelGravitacion<<<1,256>>>();	
 }
@@ -284,8 +275,12 @@ int i;
 
 	 for(i=0;i<N;i++){
 	  glPushMatrix();
-	  glTranslatef(cuerpos[i].px,cuerpos[i].py,cuerpos[i].pz);
-	  glColor3f(cuerpos[i].r,cuerpos[i].g,cuerpos[i].b);	        
+	  glTranslatef(cPositionX[i],cPositionY[i],cPositionZ[i]);
+	  
+
+	  //reemplazar por los valores random de los colores//
+	
+	  glColor3f((double )rand()/(RAND_MAX+1.0),(double )rand()/(RAND_MAX+1.0),(double )rand()/(RAND_MAX+1.0));	        
           glutSolidSphere(0.02, 20, 20);
         	
           glPopMatrix();
@@ -295,7 +290,7 @@ int i;
 	//gravitacion GPU//
 	//gravitacionGPU(cuerpos,N,delta_tiempo);
 	//TRAERME LOS DATOS DE LA GPU//
-	gravitacionCPU(cuerpos,N,delta_tiempo);
+	gravitacionCPU(N,delta_tiempo);
 }
 
 void GL_dibujar(void) {
@@ -486,6 +481,7 @@ int main(int argc, char * argv[]) {
 	delta_tiempo = atof(argv[2]);
 	pasos = atoi(argv[3]);
 	
+
 	cPositionX = (float*) malloc (N*sizeof(float));  
 	cPositionY = (float*) malloc (N*sizeof(float));
 	cPositionZ = (float*) malloc (N*sizeof(float));
@@ -493,15 +489,17 @@ int main(int argc, char * argv[]) {
 	cVelocityX = (float*) malloc (N*sizeof(float));
 	cVelocityY = (float*) malloc (N*sizeof(float));
 	cVelocityZ = (float*) malloc (N*sizeof(float));
-//gasta aca no krazhea//
+	
+	masas = (float*) malloc (N*sizeof(float));
 
-
-
-	cuerpos = (cuerpo_t*)malloc(sizeof(cuerpo_t)*N);
+	
 	fuerza_totalX = (float*)malloc(sizeof(float)*N);
 	fuerza_totalY = (float*)malloc(sizeof(float)*N);
 	fuerza_totalZ = (float*)malloc(sizeof(float)*N);
-	inicializarCuerpos(cuerpos,N);
+
+	inicializarCuerpos(N);
+	
+
 	//aca pasamos los datos a la GPU por primera vez//
 	//ADENTRO DE ESTO SE VA A LLAMAR AL CALCULO//
 	procesoOpenGL(argc,argv);
