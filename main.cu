@@ -4,6 +4,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <math.h>
+#include <cuda.h>
 
 //
 // Constantes para OpenGL
@@ -30,6 +31,7 @@
 //
 
 
+const int CUDA_BLK = 64;  // Tamaño predeterminado de bloque de hilos CUDA
 
 float toroide_alfa;
 float toroide_theta;
@@ -43,7 +45,7 @@ int delta_tiempo = 1.0f; //Intervalo de tiempo, longitud de un paso
 int pasos;
 int N;
 
-//variables nuestras re locas//
+//variables nuestras CPU//
 float *masas;
 float *cPositionX;
 float *cPositionY;
@@ -57,22 +59,36 @@ float *fuerza_totalX;
 float *fuerza_totalY; 
 float *fuerza_totalZ;
 
+//variables nuestras GPU//
+float *gpu_masas;
+float *gpu_cPositionX;
+float *gpu_cPositionY;
+float *gpu_cPositionZ;
+
+float *gpu_cVelocityX;
+float *gpu_cVelocityY;
+float *gpu_cVelocityZ;
+
+float *gpu_fuerza_totalX;
+float *gpu_fuerza_totalY;
+float *gpu_fuerza_totalZ;
+
 
 double cColorR = (double )rand()/(RAND_MAX+1.0);
 double cColorG = (double )rand()/(RAND_MAX+1.0);
 double cColorB = (double )rand()/(RAND_MAX+1.0);
 
-///terminan las variables nuestras re locas dodi.//
+//terminan las variables nuestras.//
 
 //
 // Funciones para Algoritmo de gravitacion
 //
 
 void calcularFuerzas(int N, int dt){
-int cuerpo1, cuerpo2;
-float dif_X, dif_Y, dif_Z;
-float distancia;
-float F;
+	int cuerpo1, cuerpo2;
+	float dif_X, dif_Y, dif_Z;
+	float distancia;
+	float F;
 
 	for(cuerpo1 = 0; cuerpo1<N-1 ; cuerpo1++){
 		for(cuerpo2 = cuerpo1 + 1; cuerpo2<N ; cuerpo2++){
@@ -126,7 +142,6 @@ void moverCuerpos(int N, int dt){
 }
 
 void gravitacionCPU(int N, int dt){
-	//reescribir estas dos funciones en gpu//
 	calcularFuerzas(N,dt);
 	moverCuerpos(N,dt);
 }
@@ -213,13 +228,174 @@ void finalizar(void){
 // ===== GPU =====
 // ===============
 
-__global__ void kernelGravitacion(void){
- printf("Hello\n");
+
+__global__ void kernelCalcularFuerzas(int N, int dt, float *gpu_masas, float *gpu_cPositionX, float *gpu_cPositionY, float *gpu_cPositionZ, float *gpu_cVelocityX, float *gpu_cVelocityY, float *gpu_cVelocityZ, float *gpu_fuerza_totalX, float *gpu_fuerza_totalY, float *gpu_fuerza_totalZ){
+
+	extern __shared__ float shared_size[];
+
+	//averiguar bien como saltear a la siguiente posición
+	float *sh_fuerza_totalX = &shared_size[0];
+	float *sh_fuerza_totalY = &shared_size[1*CUDA_BLK];
+	float *sh_fuerza_totalZ = &shared_size[2*CUDA_BLK];
+
+	float *sh_cPositionX = &shared_size[3*CUDA_BLK];
+	float *sh_cPositionY = &shared_size[4*CUDA_BLK];
+	float *sh_cPositionZ = &shared_size[5*CUDA_BLK];
+
+	float *sh_cVelocityX = &shared_size[6*CUDA_BLK];
+	float *sh_cVelocityY = &shared_size[7*CUDA_BLK];
+	float *sh_cVelocityZ = &shared_size[8*CUDA_BLK];
+
+	float *sh_masas = &shared_size[9*CUDA_BLK];
+
+	//CON ESTA SOLUCIÓN, CONVIENE TENER MÁS HILOS QUE BLOQUES
+	//LA MASA SE PUEDE PONER EN MEMORIA CONSTANTE Para eso habría que tenerla en tiempo de ejecución
+
+	//DEFINO EL INDICE DE MI HILO
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	int i;
+	//Acceden coalescentemente a la memoria global para traer los datos a la memoria compartida
+	for(i=0;i<N;i++){
+		//OBTENGO LOS DATOS DE MASA Y POSICIÓN DE MI INDICE, INICIALIZO VECTOR DE FUERZA EN CERO
+		
+		sh_masas[threadIdx.x]	= gpu_masas[idx];
+
+		sh_fuerza_totalX[threadIdx.x] 	= 0.0;
+		sh_fuerza_totalY[threadIdx.x] 	= 0.0;
+		sh_fuerza_totalZ[threadIdx.x] 	= 0.0;
+
+		sh_cPositionX[threadIdx.x]	= gpu_cPositionX[idx];
+		sh_cPositionY[threadIdx.x]	= gpu_cPositionY[idx];
+		sh_cPositionZ[threadIdx.x]	= gpu_cPositionZ[idx];
+
+		sh_cVelocityX[threadIdx.x]	= gpu_cVelocityX[idx];
+		sh_cVelocityY[threadIdx.x]	= gpu_cVelocityY[idx];
+		sh_cVelocityZ[threadIdx.x]	= gpu_cVelocityZ[idx];	
+	}
+
+	__syncthreads();
+ 	//Se sincronizan para asegurar que todos los hilos trajeron los datos a procesar
+
+	//EN LA POSICION CERO DEL ARREGLO DE FUERZAS, GUARDO LA FUERZA DEL CUERPO 1 CONTRA TODOS
+	//CALCULO MI FUERZA CONTRA TODOS LOS CUERPOS DE MI BLOQUE
+	//LUEGO TRAIGO EL SIGUIENTE BLOQUE, HAGO EL CALCULO DE FUERZAS Y LO GUARDO EN EL ARREGLO DE FUERZAS COMPARTIDO
+	//ES DECIR, VAMOS ITERANDO POR CADA BLOQUE
+
+	int cuerpo1 = 1;
+	int cuerpo2 = 2;
+	float dif_X = sh_cPositionX[cuerpo2] - sh_cPositionX[cuerpo1];
+	float dif_Y = sh_cPositionY[cuerpo2] - sh_cPositionY[cuerpo1];
+	float dif_Z = sh_cPositionZ[cuerpo2] - sh_cPositionZ[cuerpo1];
+              
+	float distancia = sqrt(dif_X*dif_X + dif_Y*dif_Y + dif_Z*dif_Z);
+
+        float F = (G*sh_masas[cuerpo1]*sh_masas[cuerpo2])/(distancia*distancia);
+
+        dif_X *= F;
+	dif_Y *= F;
+	dif_Z *= F;
+
+        sh_fuerza_totalX[cuerpo1] += dif_X;
+	sh_fuerza_totalY[cuerpo1] += dif_Y;
+	sh_fuerza_totalZ[cuerpo1] += dif_Z;
+
+	sh_fuerza_totalX[cuerpo2] -= dif_X;
+	sh_fuerza_totalY[cuerpo2] -= dif_Y;
+	sh_fuerza_totalZ[cuerpo2] -= dif_Z;
+
+	
+	__syncthreads();
+	//Se sincronizan para asegurar que todos los hilos terminaron de procesar
+	
+	//Acceden coalescentemente a la memoria global para escribir los resultados
+	for(i=0;i<N;i++){
+		//GUARDO TODOS LOS DATOS EN LA MEMORIA COMPARTIDA, POSICIÓN, FUERZA, VELOCIDAD.
+		gpu_fuerza_totalX[idx] 	=	sh_fuerza_totalX[threadIdx.x];
+		gpu_fuerza_totalY[idx] 	=	sh_fuerza_totalY[threadIdx.x];
+		gpu_fuerza_totalZ[idx] 	=	sh_fuerza_totalZ[threadIdx.x];
+		
+		//Debería devolver la posición? en teoría no cambió
+		gpu_cPositionX[idx]	= 	sh_cPositionX[threadIdx.x];
+		gpu_cPositionY[idx]	= 	sh_cPositionY[threadIdx.x];
+		gpu_cPositionZ[idx]	= 	sh_cPositionZ[threadIdx.x];
+		
+		//Debería devolver la fuerza? en teoría no cambió
+		gpu_cVelocityX[idx]	= 	sh_cVelocityX[threadIdx.x];
+		gpu_cVelocityY[idx]	= 	sh_cVelocityY[threadIdx.x];
+		gpu_cVelocityZ[idx]	= 	sh_cVelocityZ[threadIdx.x];
+	}
+}
+
+__global__ void kernelMoverCuerpos(int N, int dt, float *gpu_masas, float *gpu_cPositionX, float *gpu_cPositionY, float *gpu_cPositionZ, float *gpu_cVelocityX, float *gpu_cVelocityY, float *gpu_cVelocityZ, float *gpu_fuerza_totalX, float *gpu_fuerza_totalY, float *gpu_fuerza_totalZ){
+
+	//DEFINO EL INDICE DE MI HILO
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	int i;
+	//Acceden coalescentemente a la memoria global para traer los datos a la memoria compartida
+
+	/*
+	//TODO Voy a necesitar hacer lo de la memoria compartida acá? o accedo directamente todo con lo de GPU?
+	for(i=0;i<N;i++){
+		//OBTENGO LOS DATOS DE MASA Y POSICIÓN DE MI INDICE, INICIALIZO VECTOR DE FUERZA EN CERO
+		
+		sh_masas[threadIdx.x]		= gpu_masas[idx];
+
+		sh_fuerza_totalX[threadIdx.x] 	= gpu_fuerza_totalX[idx];
+		sh_fuerza_totalY[threadIdx.x] 	= gpu_fuerza_totalY[idx];
+		sh_fuerza_totalZ[threadIdx.x] 	= gpu_fuerza_totalZ[idx];
+
+		sh_cPositionX[threadIdx.x]	= gpu_cPositionX[idx];
+		sh_cPositionY[threadIdx.x]	= gpu_cPositionY[idx];
+		sh_cPositionZ[threadIdx.x]	= gpu_cPositionZ[idx];
+
+		sh_cVelocityX[threadIdx.x]	= gpu_cVelocityX[idx];
+		sh_cVelocityY[threadIdx.x]	= gpu_cVelocityY[idx];
+		sh_cVelocityZ[threadIdx.x]	= gpu_cVelocityZ[idx];	
+	}
+
+	__syncthreads();
+ 	//Se sincronizan para asegurar que todos los hilos trajeron los datos a procesar
+
+	//ACÁ COPIÉ EL CÓDIGO DE CPU, HAY QUE REESCRIBIRLO PARA GPU	
+	int cuerpo;
+	for(cuerpo = 0; cuerpo<N ; cuerpo++){
+
+        	gpu_fuerza_totalX[cuerpo] *= 1/gpu_masas[cuerpo];
+        	gpu_fuerza_totalY[cuerpo] *= 1/gpu_masas[cuerpo];
+        	
+
+        	gpu_cVelocityX[cuerpo] += gpu_fuerza_totalX[cuerpo]*dt;
+        	gpu_cVelocityY[cuerpo] += gpu_fuerza_totalY[cuerpo]*dt;
+        	
+
+        	gpu_cPositionX[cuerpo] += gpu_cVelocityX[cuerpo] *dt;
+        	gpu_cPositionY[cuerpo] += gpu_cVelocityY[cuerpo] *dt;
+        	
+
+        	gpu_fuerza_totalX[cuerpo] = 0.0;
+		gpu_fuerza_totalY[cuerpo] = 0.0;
+		gpu_fuerza_totalZ[cuerpo] = 0.0;
+
+    	}
+	*/
+	
 }
 
 void gravitacionGPU( int N, int dt){
- 	
-	kernelGravitacion<<<1,256>>>();	
+	//TENEMOS QUE REESCRIBIR ESTAS DOS FUNCIONES PARA QUE ANDEN CON EL GPU
+	
+	// Bloque unidimensional de hilos (*blk_size* hilos)
+	dim3 dimBlock(CUDA_BLK);
+
+	// Grid unidimensional (*ceil(n/blk_size)* bloques)
+	dim3 dimGrid((N + dimBlock.x - 1) / dimBlock.x);
+
+	kernelCalcularFuerzas<<<dimGrid,dimBlock>>>(N, dt, gpu_masas, gpu_cPositionX, gpu_cPositionY, gpu_cPositionZ ,gpu_cVelocityX, gpu_cVelocityY, gpu_cVelocityZ, gpu_fuerza_totalX, gpu_fuerza_totalY, gpu_fuerza_totalZ);
+	cudaDeviceSynchronize();
+
+	//Al kernel de mover cuerpos, le paso todos los parametros de arreglos de la GPU?
+	kernelMoverCuerpos<<<dimGrid,dimBlock>>>(N, dt, gpu_masas, gpu_cPositionX, gpu_cPositionY, gpu_cPositionZ ,gpu_cVelocityX, gpu_cVelocityY, gpu_cVelocityZ, gpu_fuerza_totalX, gpu_fuerza_totalY, gpu_fuerza_totalZ);
+	cudaDeviceSynchronize();
 }
 
 // ==================
@@ -288,9 +464,18 @@ int i;
 
 	//ACA!!! se Llama a la funcion que calcula las fuerzas nuevamente
 	//gravitacion GPU//
-	//gravitacionGPU(cuerpos,N,delta_tiempo);
+	gravitacionGPU(N,delta_tiempo);
 	//TRAERME LOS DATOS DE LA GPU//
-	gravitacionCPU(N,delta_tiempo);
+	
+	cudaMemcpy(cPositionX, gpu_cPositionX, N*sizeof(float), cudaMemcpyDeviceToHost);
+	cudaMemcpy(cPositionY, gpu_cPositionY, N*sizeof(float), cudaMemcpyDeviceToHost);
+	cudaMemcpy(cPositionZ, gpu_cPositionZ, N*sizeof(float), cudaMemcpyDeviceToHost);
+
+	cudaMemcpy(cVelocityX, gpu_cVelocityX, N*sizeof(float), cudaMemcpyDeviceToHost);
+	cudaMemcpy(cVelocityY, gpu_cVelocityY, N*sizeof(float), cudaMemcpyDeviceToHost);
+	cudaMemcpy(cVelocityZ, gpu_cVelocityZ, N*sizeof(float), cudaMemcpyDeviceToHost);
+	
+	//gravitacionCPU(N,delta_tiempo);
 }
 
 void GL_dibujar(void) {
@@ -457,7 +642,7 @@ void procesoOpenGL(int argc, char * argv[]){
 
     //Define cual es la funcion de control de renderizado
     // Se llama cada vez que se quiere dibujar nuevamente en la pantalla (cada vez que se produce el evento render)
-    //GL DIBUJAR LLAMA A NUESTRA PORQUERIA//
+    //GL DIBUJAR LLAMA A NUESTRO CÓDIGO//
     glutDisplayFunc (GL_dibujar);
     glutReshapeFunc(GL_cambioDeDimensionDeVentana);
     glutIdleFunc(GL_dibujar);
@@ -476,12 +661,13 @@ void procesoOpenGL(int argc, char * argv[]){
 
 
 int main(int argc, char * argv[]) {
-
+	
 	N = atoi(argv[1]);
 	delta_tiempo = atof(argv[2]);
 	pasos = atoi(argv[3]);
 	
 
+	//CPU VARIABLES
 	cPositionX = (float*) malloc (N*sizeof(float));  
 	cPositionY = (float*) malloc (N*sizeof(float));
 	cPositionZ = (float*) malloc (N*sizeof(float));
@@ -491,16 +677,59 @@ int main(int argc, char * argv[]) {
 	cVelocityZ = (float*) malloc (N*sizeof(float));
 	
 	masas = (float*) malloc (N*sizeof(float));
-
 	
 	fuerza_totalX = (float*)malloc(sizeof(float)*N);
 	fuerza_totalY = (float*)malloc(sizeof(float)*N);
 	fuerza_totalZ = (float*)malloc(sizeof(float)*N);
 
-	inicializarCuerpos(N);
+
+	//GPU VARIABLES
+	gpu_cPositionX = (float*) malloc (N*sizeof(float));  
+	gpu_cPositionY = (float*) malloc (N*sizeof(float));
+	gpu_cPositionZ = (float*) malloc (N*sizeof(float));
 	
+	gpu_cVelocityX = (float*) malloc (N*sizeof(float));
+	gpu_cVelocityY = (float*) malloc (N*sizeof(float));
+	gpu_cVelocityZ = (float*) malloc (N*sizeof(float));
+	
+	gpu_masas = (float*) malloc (N*sizeof(float));
+	
+	gpu_fuerza_totalX = (float*)malloc(sizeof(float)*N);
+	gpu_fuerza_totalY = (float*)malloc(sizeof(float)*N);
+	gpu_fuerza_totalZ = (float*)malloc(sizeof(float)*N);
+
+	cudaMalloc(&gpu_cPositionX, N*sizeof(float));
+	cudaMalloc(&gpu_cPositionY, N*sizeof(float));
+	cudaMalloc(&gpu_cPositionZ, N*sizeof(float));
+
+	cudaMalloc(&gpu_cVelocityX, N*sizeof(float));
+	cudaMalloc(&gpu_cVelocityY, N*sizeof(float));
+	cudaMalloc(&gpu_cVelocityZ, N*sizeof(float));
+
+	cudaMalloc(&gpu_masas, N*sizeof(float));
+
+	cudaMalloc(&gpu_fuerza_totalX, N*sizeof(float));
+	cudaMalloc(&gpu_fuerza_totalY, N*sizeof(float));
+	cudaMalloc(&gpu_fuerza_totalZ, N*sizeof(float));
+
+	inicializarCuerpos(N);
 
 	//aca pasamos los datos a la GPU por primera vez//
+	cudaMemcpy(gpu_cPositionX, cPositionX, N*sizeof(float), cudaMemcpyHostToDevice);
+	cudaMemcpy(gpu_cPositionY, cPositionY, N*sizeof(float), cudaMemcpyHostToDevice);
+	cudaMemcpy(gpu_cPositionZ, cPositionZ, N*sizeof(float), cudaMemcpyHostToDevice);
+
+	cudaMemcpy(gpu_cVelocityX, cVelocityX, N*sizeof(float), cudaMemcpyHostToDevice);
+	cudaMemcpy(gpu_cVelocityY, cVelocityY, N*sizeof(float), cudaMemcpyHostToDevice);
+	cudaMemcpy(gpu_cVelocityZ, cVelocityZ, N*sizeof(float), cudaMemcpyHostToDevice);
+
+	cudaMemcpy(gpu_masas, masas, N*sizeof(float), cudaMemcpyHostToDevice);
+
+	cudaMemcpy(gpu_fuerza_totalX, fuerza_totalX, N*sizeof(float), cudaMemcpyHostToDevice);
+	cudaMemcpy(gpu_fuerza_totalY, fuerza_totalY, N*sizeof(float), cudaMemcpyHostToDevice);
+	cudaMemcpy(gpu_fuerza_totalZ, fuerza_totalZ, N*sizeof(float), cudaMemcpyHostToDevice);
+
+	
 	//ADENTRO DE ESTO SE VA A LLAMAR AL CALCULO//
 	procesoOpenGL(argc,argv);
 
