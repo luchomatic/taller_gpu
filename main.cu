@@ -242,66 +242,70 @@ __global__ void kernelCalcularFuerzas(int N, int dt, float * gpu_masas, float * 
 
     //DEFINO EL INDICE DE MI HILO
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int i;
-    //Acceden coalescentemente a la memoria global para traer los datos a la memoria compartida
-    for (i = 0; i < CUDA_BLK; i++) {
-        //OBTENGO LOS DATOS DE MASA Y POSICIÓN DE MI INDICE, INICIALIZO VECTOR DE FUERZA EN CERO
+    int i, j;
+    //Itero para todos los bloques
+    for (j = 0; j < N/CUDA_BLK; j++){
 
-        sh_masas[threadIdx.x] = gpu_masas[idx];
+	    //Accedo coalescentemente a la memoria global para traer los datos a la memoria compartida
+	    for (i = 0; i < CUDA_BLK; i++) {
+	        //OBTENGO LOS DATOS DE MASA Y POSICIÓN DE MI INDICE, INICIALIZO VECTOR DE FUERZA EN CERO
 
-        sh_cPositionX[threadIdx.x] = gpu_cPositionX[idx];
-        sh_cPositionY[threadIdx.x] = gpu_cPositionY[idx];
-        sh_cPositionZ[threadIdx.x] = gpu_cPositionZ[idx];
+	        sh_masas[threadIdx.x] = gpu_masas[idx];
 
-        sh_cVelocityX[threadIdx.x] = gpu_cVelocityX[idx];
-        sh_cVelocityY[threadIdx.x] = gpu_cVelocityY[idx];
-        sh_cVelocityZ[threadIdx.x] = gpu_cVelocityZ[idx];
-    }
+	        sh_cPositionX[threadIdx.x] = gpu_cPositionX[idx];
+	        sh_cPositionY[threadIdx.x] = gpu_cPositionY[idx];
+	        sh_cPositionZ[threadIdx.x] = gpu_cPositionZ[idx];
 
-    __syncthreads();
-    //Se sincronizan para asegurar que todos los hilos trajeron los datos a procesar
+	        sh_cVelocityX[threadIdx.x] = gpu_cVelocityX[idx];
+	        sh_cVelocityY[threadIdx.x] = gpu_cVelocityY[idx];
+	        sh_cVelocityZ[threadIdx.x] = gpu_cVelocityZ[idx];
+	    }
 
-    for (i = 0; i < CUDA_BLK; i++) {
-        //Fuerzas inicializadas en cero
-        sh_fuerza_totalX[threadIdx.x] = 0.0f;
-        sh_fuerza_totalY[threadIdx.xi] = 0.0f;
-        sh_fuerza_totalZ[threadIdx.x] = 0.0f;
+	    __syncthreads();
+	    //Se sincronizan para asegurar que todos los hilos trajeron los datos a procesar
 
-        float dif_X = sh_cPositionX[threadIdx.x] - sh_cPositionX[i];
-        float dif_Y = sh_cPositionY[threadIdx.x] - sh_cPositionY[i];
-        float dif_Z = sh_cPositionZ[threadIdx.x] - sh_cPositionZ[i];
+	    for (i = 0; i < CUDA_BLK; i++) {
+	        //Fuerzas inicializadas en cero
+	        sh_fuerza_totalX[threadIdx.x] = 0.0f;
+	        sh_fuerza_totalY[threadIdx.xi] = 0.0f;
+	        sh_fuerza_totalZ[threadIdx.x] = 0.0f;
 
-        float distancia = sqrt(dif_X * dif_X + dif_Y * dif_Y + dif_Z * dif_Z);
+	        float dif_X = sh_cPositionX[threadIdx.x] - sh_cPositionX[i];
+	        float dif_Y = sh_cPositionY[threadIdx.x] - sh_cPositionY[i];
+	        float dif_Z = sh_cPositionZ[threadIdx.x] - sh_cPositionZ[i];
 
-        float F = (G * sh_masas[i] * sh_masas[threadIdx.x]) / (distancia * distancia);
+	        float distancia = sqrt(dif_X * dif_X + dif_Y * dif_Y + dif_Z * dif_Z);
 
-        dif_X *= F;
-        dif_Y *= F;
-        dif_Z *= F;
+	        float F = (G * sh_masas[i] * sh_masas[threadIdx.x]) / (distancia * distancia);
 
-        sh_fuerza_totalX[threadIdx.x] += dif_X;
-        sh_fuerza_totalY[threadIdx.x] += dif_Y;
-        sh_fuerza_totalZ[threadIdx.x] += dif_Z;
-    }
+	        dif_X *= F;
+	        dif_Y *= F;
+	        dif_Z *= F;
 
-    __syncthreads();
-    //Se sincronizan para asegurar que todos los hilos terminaron de procesar
+	        sh_fuerza_totalX[threadIdx.x] += dif_X;
+	        sh_fuerza_totalY[threadIdx.x] += dif_Y;
+	        sh_fuerza_totalZ[threadIdx.x] += dif_Z;
+	    }
 
-    //Acceden coalescentemente a la memoria global para escribir los resultados
-    for (i = 0; i < CUDA_BLK; i++) {
-        //GUARDO TODOS LOS DATOS EN LA MEMORIA COMPARTIDA, POSICIÓN, FUERZA, VELOCIDAD.
-        gpu_fuerza_totalX[idx] = sh_fuerza_totalX[threadIdx.x];
-        gpu_fuerza_totalY[idx] = sh_fuerza_totalY[threadIdx.x];
-        gpu_fuerza_totalZ[idx] = sh_fuerza_totalZ[threadIdx.x];
+	    __syncthreads();
+	    //Se sincronizan para asegurar que todos los hilos terminaron de procesar
 
-        gpu_cPositionX[idx] = sh_cPositionX[threadIdx.x];
-        gpu_cPositionY[idx] = sh_cPositionY[threadIdx.x];
-        gpu_cPositionZ[idx] = sh_cPositionZ[threadIdx.x];
+	    //Acceden coalescentemente a la memoria global para escribir los resultados
+	    for (i = 0; i < CUDA_BLK; i++) {
+	        //GUARDO TODOS LOS DATOS EN LA MEMORIA COMPARTIDA, POSICIÓN, FUERZA, VELOCIDAD.
+	        gpu_fuerza_totalX[idx] = sh_fuerza_totalX[threadIdx.x];
+	        gpu_fuerza_totalY[idx] = sh_fuerza_totalY[threadIdx.x];
+	        gpu_fuerza_totalZ[idx] = sh_fuerza_totalZ[threadIdx.x];
 
-        gpu_cVelocityX[idx] = sh_cVelocityX[threadIdx.x];
-        gpu_cVelocityY[idx] = sh_cVelocityY[threadIdx.x];
-        gpu_cVelocityZ[idx] = sh_cVelocityZ[threadIdx.x];
-    }
+	        gpu_cPositionX[idx] = sh_cPositionX[threadIdx.x];
+	        gpu_cPositionY[idx] = sh_cPositionY[threadIdx.x];
+	        gpu_cPositionZ[idx] = sh_cPositionZ[threadIdx.x];
+
+	        gpu_cVelocityX[idx] = sh_cVelocityX[threadIdx.x];
+	        gpu_cVelocityY[idx] = sh_cVelocityY[threadIdx.x];
+	        gpu_cVelocityZ[idx] = sh_cVelocityZ[threadIdx.x];
+	    }
+    } //Fin de la iteración por bloques
 }
 
 __global__ void kernelMoverCuerpos(int N, int dt, float * gpu_masas, float * gpu_cPositionX, float * gpu_cPositionY, float * gpu_cPositionZ, float * gpu_cVelocityX, float * gpu_cVelocityY, float * gpu_cVelocityZ, float * gpu_fuerza_totalX, float * gpu_fuerza_totalY, float * gpu_fuerza_totalZ) {
